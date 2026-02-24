@@ -1,0 +1,10 @@
+# LinkedIn 자동화 설정 (계정 정보 포함)
+automation/config.py
+automation/.env
+
+# 브라우저 세션 데이터
+browser_state/
+
+# Python
+__pycache__/
+*.pyc
