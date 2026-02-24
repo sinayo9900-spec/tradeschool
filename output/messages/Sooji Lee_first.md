@@ -1,12 +1,14 @@
 ---
 바이어: Sooji Lee
-회사: [Company]
-유형: 첫 연락
+회사: 육조상사
+유형: first
 생성일: 2026-02-24
 ---
 
-Hi Sooji, I noticed you're working in F&B distribution here in Singapore with a focus on Korean food products — that's a space we're really excited about too.
+Hi Sooji,
 
-We supply Korean hardtack biscuits, a classic retro snack that's been getting great traction as a bar bite and coffee pairing in the local F&B scene. A few spots have started featuring them as a unique K-snack option, and the reception has been really positive.
+I’ve been following 육조상사’s success in bringing quality Korean food products to the Singapore market.
 
-Would love to hear if this is something that could complement your current Korean product lineup?
+Given the strong K-food trend and the vibrant F&B scene in Singapore, our "K-Biscuit" (Korean Hardtack) could be a great addition to your portfolio. It’s a cost-effective, retro-style snack that pairs perfectly with cocktails and coffee, making it ideal for your bar and cafe channels.
+
+Would you be open to a brief chat to see if this fits your current procurement needs?

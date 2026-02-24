@@ -4,6 +4,7 @@ import csv
 import sys
 import os
 import re
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -52,16 +53,23 @@ def write_outreach(rows: list[dict]):
         writer.writerows(rows)
 
 
-def find_message_file(buyer_name: str) -> str | None:
-    """바이어의 메시지 파일을 찾아 내용을 반환한다."""
-    # 첫 메시지 파일 찾기
-    first_msg = MESSAGES_DIR / f"{buyer_name}_first.md"
-    if first_msg.exists():
-        return first_msg.read_text(encoding="utf-8")
-
-    # 패턴 매칭으로 찾기
-    for f in MESSAGES_DIR.glob(f"{buyer_name}_*.md"):
-        return f.read_text(encoding="utf-8")
+def find_message_file(buyer_name: str, is_followup: bool = False) -> str | None:
+    """바이어의 메시지 파일을 찾아 내용을 반환한다. 후속 메시지인 경우 가장 높은 번호를 찾는다."""
+    if not is_followup:
+        first_msg = MESSAGES_DIR / f"{buyer_name}_first.md"
+        if first_msg.exists():
+            return first_msg.read_text(encoding="utf-8")
+    else:
+        # 후속 메시지 (followup_1, followup_2 ...) 중 가장 큰 번호 찾기
+        followups = list(MESSAGES_DIR.glob(f"{buyer_name}_followup_*.md"))
+        if followups:
+            # 숫자가 가장 높은 파일을 선택
+            latest_f = max(followups, key=lambda x: int(re.search(r"followup_(\d+)", x.name).group(1)) if re.search(r"followup_(\d+)", x.name) else 0)
+            return latest_f.read_text(encoding="utf-8")
+        
+        # 만약 followup_N 형식이 아니면 일반 패턴으로 찾기
+        for f in MESSAGES_DIR.glob(f"{buyer_name}_followup*.md"):
+            return f.read_text(encoding="utf-8")
 
     return None
 
@@ -75,56 +83,73 @@ def extract_message_body(content: str) -> str:
 
 
 def get_send_targets(buyers: list[dict], outreach: list[dict], name_filter: str | None = None) -> list[dict]:
-    """발송 대상 바이어 목록을 반환한다."""
-    # outreach에서 상태가 "대기"인 바이어 이름 집합
-    waiting_names = set()
-    for row in outreach:
-        if (row.get("상태") or "").strip() == "대기":
-            name = (row.get("이름") or "").strip()
-            if name:
-                waiting_names.add(name)
-
+    """발송 대상 바이어 목록을 반환한다 (대기자 + 7일 경과 후속 대상)."""
+    today = datetime.now()
     targets = []
-    for buyer in buyers:
-        name = (buyer.get("이름") or "").strip()
-        url = (buyer.get("LinkedIn URL") or "").strip()
 
-        if not url or not name:
+    for row in outreach:
+        name = (row.get("이름") or "").strip()
+        status = (row.get("상태") or "").strip()
+        if not name: continue
+        if name_filter and name != name_filter: continue
+
+        # 1. 대상 여부 및 메시지 유형 결정
+        is_target = False
+        is_followup = False
+        
+        if status == "대기":
+            is_target = True
+            is_followup = False
+        elif status == "발송":
+            # 날짜 체크 (첫발송일 또는 마지막 후속발송일로부터 7일 경과)
+            last_date_str = row.get("후속발송일") or row.get("첫발송일")
+            if last_date_str:
+                try:
+                    last_date = datetime.strptime(last_date_str, "%Y-%m-%d")
+                    days_passed = (today - last_date).days
+                    if days_passed >= 7:
+                        is_target = True
+                        is_followup = True
+                except ValueError:
+                    pass
+
+        if not is_target:
             continue
 
-        if name_filter and name != name_filter:
+        # 2. 바이어 기본 정보 가져오기
+        buyer_info = next((b for b in buyers if (b.get("이름") or "").strip() == name), None)
+        if not buyer_info or not (buyer_info.get("LinkedIn URL") or "").strip():
             continue
 
-        # outreach에 없거나 "대기" 상태인 바이어만
-        in_outreach = any((r.get("이름") or "").strip() == name for r in outreach)
-        if in_outreach and name not in waiting_names:
-            continue
-
-        # 메시지 파일 확인
-        msg_content = find_message_file(name)
+        # 3. 메시지 파일 확인
+        msg_content = find_message_file(name, is_followup=is_followup)
         if not msg_content:
             continue
 
         targets.append({
             "name": name,
-            "company": buyer.get("회사", ""),
-            "url": url,
+            "company": buyer_info.get("회사", ""),
+            "url": buyer_info.get("LinkedIn URL", ""),
             "message": extract_message_body(msg_content),
             "full_message": msg_content,
+            "is_followup": is_followup
         })
 
     return targets
 
 
-def update_outreach_status(name: str, outreach: list[dict]) -> list[dict]:
-    """바이어의 outreach 상태를 '발송'으로 업데이트한다."""
+def update_outreach_status(name: str, outreach: list[dict], is_followup: bool = False) -> list[dict]:
+    """바이어의 outreach 상태 및 날짜를 업데이트한다."""
     today = datetime.now().strftime("%Y-%m-%d")
     found = False
 
     for row in outreach:
         if (row.get("이름") or "").strip() == name:
             row["상태"] = "발송"
-            row["첫발송일"] = today
+            if is_followup:
+                row["후속발송일"] = today
+            else:
+                row["첫발송일"] = today
             found = True
             break
 
@@ -156,6 +181,13 @@ async def run_login():
 
 async def run_send(args):
     """발송 모드 실행."""
+    # 메시지 자동 생성기 실행
+    print("[*] 메시지 생성 상태 확인 중...")
+    try:
+        subprocess.run([sys.executable, str(BASE_DIR / "automation" / "generator.py")], check=True)
+    except Exception as e:
+        print(f"[!] 메시지 생성기 실행 중 오류 발생: {e}")
+
     buyers = read_buyers()
     outreach = read_outreach()
 
@@ -163,11 +195,8 @@ async def run_send(args):
 
     if not targets:
         print("[!] 발송 대상이 없습니다.")
-        if args.name:
-            print(f"    '{args.name}' 바이어의 상태가 '대기'인지, 메시지 파일이 있는지 확인하세요.")
-        else:
-            print("    outreach.csv에 '대기' 상태 바이어가 있는지 확인하세요.")
-            print("    output/messages/ 에 메시지 파일이 있는지 확인하세요.")
+        print("    - 상태가 '대기'이고 _first.md 메시지가 있는 바이어")
+        print("    - 마지막 발송(첫/후속) 후 7일이 지났고 _followup_N.md 메시지가 있는 바이어")
         return
 
     # 일일 한도 적용
@@ -181,8 +210,9 @@ async def run_send(args):
     print(f"발송 대상 ({len(targets)}명):")
     print("=" * 50)
     for i, t in enumerate(targets, 1):
+        type_str = "후속 메시지" if t["is_followup"] else "첫 연락"
         msg_preview = t["message"][:60].replace("\n", " ") + "..."
-        print(f"  {i}. {t['name']} ({t['company']})")
+        print(f"  {i}. {t['name']} ({t['company']}) [{type_str}]")
         print(f"     URL: {t['url']}")
         print(f"     메시지: {msg_preview}")
         print()
@@ -215,7 +245,7 @@ async def run_send(args):
 
     for i, target in enumerate(targets):
         print(f"\n[{i+1}/{len(targets)}] {target['name']} ({target['company']})")
-        print(f"  URL: {target['url']}")
+        print(f"  유형: {'후속' if target['is_followup'] else '첫 연락'}")
 
         try:
             status = await bot.is_connected(target["url"])
@@ -227,19 +257,22 @@ async def run_send(args):
             elif status == "not_connected":
                 sent = await bot.send_connection_request(target["url"], target["message"])
             elif status == "pending":
-                print("  [*] 이미 커넥션 요청이 보류 중입니다. 건너뜁니다.")
-                results.append({"name": target["name"], "status": "skipped_pending"})
-                continue
+                if target["is_followup"]:
+                    print("  [*] 커넥션 보류 중이나 후속 메시지이므로 DM 전송 시도 불가 (취소)")
+                    sent = False
+                else:
+                    print("  [*] 이미 커넥션 요청이 보류 중입니다. 건너뜁니다.")
+                    results.append({"name": target["name"], "status": "skipped_pending"})
+                    continue
             else:
-                print("  [*] 연결 상태 불명 — 커넥션 요청을 시도합니다.")
                 sent = await bot.send_connection_request(target["url"], target["message"])
 
             if sent:
                 success_count += 1
-                outreach = update_outreach_status(target["name"], outreach)
+                outreach = update_outreach_status(target["name"], outreach, is_followup=target["is_followup"])
                 write_outreach(outreach)
                 results.append({"name": target["name"], "status": "sent"})
-                print(f"  [+] outreach.csv 상태 업데이트 완료")
+                print(f"  [+] outreach.csv 업데이트 완료 ({'후속발송일' if target['is_followup'] else '첫발송일'})")
             else:
                 fail_count += 1
                 results.append({"name": target["name"], "status": "failed"})
