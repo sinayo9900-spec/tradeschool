@@ -1,7 +1,9 @@
 import asyncio
 import random
+import re
 import os
 from pathlib import Path
+from urllib.parse import urlparse, quote
 from playwright.async_api import async_playwright, Page, BrowserContext
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -273,6 +275,219 @@ class LinkedInBot:
         except Exception as e:
             print(f"  [!] 다이렉트 메시지 실패: {e}")
             return False
+
+    # ── 검색 / 프로필 스크래핑 ───────────────────────────
+
+    async def search_people(self, query: str, page: int = 1):
+        """LinkedIn People 검색 페이지로 이동한다."""
+        # 열린 메시지 다이얼로그 닫기
+        try:
+            close_btn = self.page.locator("button[data-control-name='overlay.close_conversation_window'], header.msg-overlay-bubble-header button.msg-overlay-bubble-header__control--new-convo-btn, button.msg-overlay-conversation-bubble__close-btn").first
+            if await close_btn.count() and await close_btn.is_visible():
+                await close_btn.click()
+                await self.page.wait_for_timeout(500)
+        except Exception:
+            pass
+        # msg-overlay 전체 닫기 시도
+        try:
+            for close_sel in [
+                "button.msg-overlay-bubble-header__control[aria-label*='닫']",
+                "button.msg-overlay-bubble-header__control[aria-label*='Close']",
+                "aside.msg-overlay-container button[data-control-name='overlay.minimize_connection_list_bar']",
+            ]:
+                btn = self.page.locator(close_sel).first
+                if await btn.count() and await btn.is_visible():
+                    await btn.click()
+                    await self.page.wait_for_timeout(300)
+        except Exception:
+            pass
+
+        encoded = quote(query)
+        url = f"https://www.linkedin.com/search/results/people/?keywords={encoded}&page={page}"
+        await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        await self.page.wait_for_timeout(3000)
+
+        # 페이지 로드 후 스크롤하여 lazy-load 트리거
+        await self.page.evaluate("window.scrollBy(0, 300)")
+        await self.page.wait_for_timeout(1000)
+
+    async def parse_search_results(self) -> list[dict]:
+        """현재 검색 결과 페이지에서 프로필 정보를 추출한다."""
+        results = []
+
+        # 여러 셀렉터 시도 (LinkedIn이 클래스명을 자주 변경함)
+        ITEM_SELECTORS = [
+            "div[data-view-name='people-search-result']",
+            "li.reusable-search__result-container",
+            "div.entity-result",
+            "li div.entity-result",
+            "ul.reusable-search__entity-result-list > li",
+            "div.search-results-container ul > li",
+        ]
+
+        items = None
+        count = 0
+        used_selector = ""
+        for sel in ITEM_SELECTORS:
+            candidate = self.page.locator(sel)
+            c = await candidate.count()
+            if c > 0:
+                items = candidate
+                count = c
+                used_selector = sel
+                break
+
+        if count == 0:
+            debug_path = BROWSER_STATE_DIR / "debug_search.png"
+            await self.page.screenshot(path=str(debug_path))
+            # DOM 구조 일부를 덤프하여 디버깅 지원
+            try:
+                snippet = await self.page.evaluate("""
+                    () => {
+                        const main = document.querySelector('main') || document.querySelector('.search-results-container') || document.body;
+                        return main.innerHTML.substring(0, 3000);
+                    }
+                """)
+                debug_html = BROWSER_STATE_DIR / "debug_search.html"
+                debug_html.write_text(snippet, encoding="utf-8")
+                print(f"  [DEBUG] 검색 결과 0건 — 스크린샷: {debug_path}")
+                print(f"  [DEBUG] HTML 덤프: {debug_html}")
+            except Exception:
+                print(f"  [DEBUG] 검색 결과 0건 — 스크린샷: {debug_path}")
+            return results
+
+        print(f"  [DEBUG] 셀렉터 '{used_selector}' → {count}건 매칭")
+
+        # 이름+URL 추출용 셀렉터 후보
+        NAME_LINK_SELECTORS = [
+            "a[data-view-name='search-result-lockup-title']",
+            "span.entity-result__title-text a",
+            "span[dir='ltr'] a",
+            "a.app-aware-link[href*='/in/']",
+        ]
+        # 직함 셀렉터 후보
+        HEADLINE_SELECTORS = [
+            "div.entity-result__primary-subtitle",
+            "div.linked-area div.t-14.t-normal",
+            "p.entity-result__summary",
+            ".t-14.t-black.t-normal",
+            "div[data-view-name='people-search-result'] .t-14",
+        ]
+        # 위치 셀렉터 후보
+        LOCATION_SELECTORS = [
+            "div.entity-result__secondary-subtitle",
+            "div.linked-area div.t-14.t-normal.t-black--light",
+            ".t-12.t-black--light.t-normal",
+            "div[data-view-name='people-search-result'] .t-12",
+        ]
+
+        for i in range(count):
+            try:
+                item = items.nth(i)
+
+                # 이름 + URL — 여러 셀렉터 시도
+                name = ""
+                profile_url = ""
+                for sel in NAME_LINK_SELECTORS:
+                    link = item.locator(sel).first
+                    if await link.count():
+                        raw_name = (await link.text_content() or "").strip()
+                        href = await link.get_attribute("href") or ""
+                        if raw_name and "/in/" in href:
+                            name = raw_name
+                            profile_url = href.split("?")[0]
+                            break
+
+                if not name or not profile_url:
+                    continue
+
+                # "LinkedIn Member" / "LinkedIn 회원" 필터링
+                if "LinkedIn Member" in name or "LinkedIn 멤버" in name or "LinkedIn 회원" in name:
+                    continue
+
+                # 직함+회사
+                headline = ""
+                for sel in HEADLINE_SELECTORS:
+                    el = item.locator(sel).first
+                    if await el.count():
+                        headline = (await el.text_content() or "").strip()
+                        if headline:
+                            break
+
+                # 위치
+                location = ""
+                for sel in LOCATION_SELECTORS:
+                    el = item.locator(sel).first
+                    if await el.count():
+                        loc = (await el.text_content() or "").strip()
+                        if loc and loc != headline:
+                            location = loc
+                            break
+
+                title, company = self._parse_headline(headline)
+
+                results.append({
+                    "name": name,
+                    "title": title,
+                    "company": company,
+                    "headline": headline,
+                    "location": location,
+                    "url": profile_url,
+                })
+            except Exception as e:
+                print(f"  [!] 검색 결과 파싱 오류 (#{i}): {e}")
+                continue
+
+        return results
+
+    async def get_profile_about(self, profile_url: str) -> str:
+        """프로필의 '소개(About)' 섹션 텍스트를 추출한다."""
+        url = self._normalize_url(profile_url)
+        await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        await self.page.wait_for_timeout(2000)
+        await self.page.evaluate("window.scrollBy(0, 500)")
+        await self.page.wait_for_timeout(1000)
+
+        about_text = ""
+        for selector in ["section#about", "section:has(h2:text('소개'))", "section:has(h2:text('About'))"]:
+            section = self.page.locator(selector).first
+            if await section.count():
+                # "더 보기" 버튼 클릭 시도
+                see_more = section.locator("button:has-text('더 보기'), button:has-text('see more'), button:has-text('See more')").first
+                if await see_more.count() and await see_more.is_visible():
+                    try:
+                        await see_more.click()
+                        await self.page.wait_for_timeout(500)
+                    except Exception:
+                        pass
+                about_text = (await section.text_content()).strip()
+                break
+
+        return about_text[:300] if about_text else ""
+
+    async def get_latest_post(self, profile_url: str) -> str:
+        """프로필의 최근 포스트 텍스트를 추출한다."""
+        url = self._normalize_url(profile_url).rstrip("/")
+        activity_url = f"{url}/recent-activity/all/"
+        await self.page.goto(activity_url, wait_until="domcontentloaded", timeout=15000)
+        await self.page.wait_for_timeout(3000)
+
+        post = self.page.locator("div.feed-shared-update-v2").first
+        if await post.count():
+            text = (await post.text_content()).strip()
+            return text[:200] if text else ""
+        return ""
+
+    @staticmethod
+    def _parse_headline(headline: str) -> tuple[str, str]:
+        """직함+회사 문자열을 (title, company)로 분리한다."""
+        if not headline:
+            return ("", "")
+        for sep in [" at ", " @ ", " | ", " - "]:
+            if sep in headline:
+                parts = headline.split(sep, 1)
+                return (parts[0].strip(), parts[1].strip())
+        return (headline.strip(), "")
 
     async def paste_text(self, element, text: str):
         """클립보드에 텍스트를 넣고 붙여넣기한다."""

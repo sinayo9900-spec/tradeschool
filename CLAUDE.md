@@ -90,11 +90,14 @@ automation/
 ├── config.example.py       # 설정 템플릿
 ├── config.py               # 실제 설정 (.gitignore 대상)
 ├── linkedin_bot.py         # 핵심 자동화 클래스
-└── send.py                 # CLI 진입점
+├── send.py                 # 메시지 발송 CLI
+└── search.py               # 바이어 검색 CLI
 browser_state/              # 로그인 세션 저장 (자동 생성, .gitignore 대상)
 ```
 
-### 자동화 워크플로우
+### send.py — 메시지 자동 발송
+
+outreach.csv에서 "대기" 상태인 바이어를 찾아 output/messages/의 메시지 파일을 LinkedIn으로 발송한다.
 
 - **"로그인 세팅해줘"** → `python automation/send.py --login` 실행 안내
   - 브라우저가 열리면 사용자가 직접 LinkedIn 로그인
@@ -103,6 +106,7 @@ browser_state/              # 로그인 세션 저장 (자동 생성, .gitignore
 - **"메시지 발송해줘"** → `python automation/send.py` 실행 안내
   - outreach.csv에서 "대기" 상태 바이어를 자동 필터링
   - output/messages/에서 메시지 파일을 읽어 발송
+  - 연결 상태에 따라 커넥션 요청(노트 포함) 또는 다이렉트 메시지 전송
   - 발송 후 outreach.csv 상태를 "발송"으로 자동 업데이트
 
 - **CLI 옵션**:
@@ -111,8 +115,31 @@ browser_state/              # 로그인 세션 저장 (자동 생성, .gitignore
   - `--dry-run`: 미리보기 모드 (실제 발송 안 함)
   - `--limit N`: 일일 발송 한도 변경 (기본 20)
 
+### search.py — 바이어 검색 자동화
+
+LinkedIn People 검색으로 잠재 바이어를 자동 수집하여 buyers.csv와 outreach.csv에 추가한다.
+
+- **"바이어 검색해줘"** → `python automation/search.py` 실행 안내
+
+- **실행 플로우** (3단계):
+  1. **검색 수집**: 검색어별 페이지 순회 → 이름/직함/회사/URL 추출 → 기존 URL 중복 체크
+  2. **프로필 상세**: 각 프로필 방문하여 소개(About) 텍스트 + 최근 포스트 수집
+  3. **결과 저장**: buyers.csv에 append + outreach.csv에 "대기" 상태로 append
+
+- **CLI 옵션**:
+  - `--login`: LinkedIn 로그인 (첫 실행 시)
+  - `--query "검색어"`: 특정 검색어 사용 (없으면 기본 검색어 4개 순회)
+  - `--limit N`: 최대 수집 인원 (기본 20)
+  - `--dry-run`: 미리보기 모드 (CSV 저장 안 함)
+  - `--skip-profiles`: 검색 결과만 수집 (프로필 방문 생략, 빠름)
+
+- **기본 검색어**: Singapore F&B procurement manager, Singapore snack biscuit distribution, Singapore food import buyer, Singapore FMCG procurement
+
+- **중복 방지**: LinkedIn URL 기준 정규화 비교 (lowercase, 쿼리파라미터 제거, https 통일)
+
 ### 설정 방법
 1. `pip install -r automation/requirements.txt && playwright install chromium`
 2. `copy automation\config.example.py automation\config.py` 후 정보 입력
 3. `python automation/send.py --login` 으로 로그인
-4. `python automation/send.py --dry-run` 으로 미리보기 확인
+4. `python automation/send.py --dry-run` 으로 발송 미리보기 확인
+5. `python automation/search.py --dry-run --limit 5` 로 검색 미리보기 확인
