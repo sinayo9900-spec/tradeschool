@@ -178,7 +178,7 @@ class LinkedInBot:
                 # 노트 입력 (300자 제한)
                 truncated_note = note[:300]
                 textarea = self.page.locator("textarea").first
-                await self.human_type(textarea, truncated_note)
+                await self.paste_text(textarea, truncated_note)
                 await self.page.wait_for_timeout(500)
 
             # 전송 버튼 클릭
@@ -243,7 +243,7 @@ class LinkedInBot:
 
             await msg_box.click()
             await self.page.wait_for_timeout(300)
-            await self.human_type(msg_box, message)
+            await self.paste_text(msg_box, message)
             await self.page.wait_for_timeout(500)
 
             # 전송
@@ -274,15 +274,12 @@ class LinkedInBot:
             print(f"  [!] 다이렉트 메시지 실패: {e}")
             return False
 
-    async def human_type(self, element, text: str):
-        """사람처럼 한 글자씩 타이핑한다."""
-        min_delay = getattr(self.config, "MIN_TYPE_DELAY", 50)
-        max_delay = getattr(self.config, "MAX_TYPE_DELAY", 150)
-
-        for char in text:
-            await element.press_sequentially(char, delay=0)
-            delay_ms = random.randint(min_delay, max_delay)
-            await self.page.wait_for_timeout(delay_ms)
+    async def paste_text(self, element, text: str):
+        """클립보드에 텍스트를 넣고 붙여넣기한다."""
+        await element.click()
+        await self.page.evaluate("text => navigator.clipboard.writeText(text)", text)
+        await self.page.keyboard.press("Control+V")
+        await self.page.wait_for_timeout(500)
 
     async def random_delay(self):
         """메시지 간 랜덤 딜레이."""
