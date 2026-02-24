@@ -364,45 +364,55 @@ class LinkedInBot:
             "span.entity-result__title-text a",
             "span[dir='ltr'] a",
             "a.app-aware-link[href*='/in/']",
+            "a[href*='/in/']",
         ]
         # 직함 셀렉터 후보
         HEADLINE_SELECTORS = [
             "div.entity-result__primary-subtitle",
-            "div.linked-area div.t-14.t-normal",
-            "p.entity-result__summary",
+            "div[data-view-name='people-search-result'] .t-14.t-black.t-normal",
+            "div[data-view-name='people-search-result'] [dir='ltr']",
             ".t-14.t-black.t-normal",
-            "div[data-view-name='people-search-result'] .t-14",
+            "div.linked-area div.t-14.t-normal",
         ]
         # 위치 셀렉터 후보
         LOCATION_SELECTORS = [
             "div.entity-result__secondary-subtitle",
-            "div.linked-area div.t-14.t-normal.t-black--light",
+            "div[data-view-name='people-search-result'] .t-12.t-black--light.t-normal",
             ".t-12.t-black--light.t-normal",
-            "div[data-view-name='people-search-result'] .t-12",
+            "div.linked-area div.t-14.t-normal.t-black--light",
         ]
 
         for i in range(count):
             try:
                 item = items.nth(i)
 
-                # 이름 + URL — 여러 셀렉터 시도
+                # 이름 + URL 추출
                 name = ""
                 profile_url = ""
                 for sel in NAME_LINK_SELECTORS:
                     link = item.locator(sel).first
                     if await link.count():
                         raw_name = (await link.text_content() or "").strip()
+                        # 숨겨진 텍스트 제거 (예: "View [Name]'s profile")
+                        raw_name = raw_name.split("\n")[0].strip()
                         href = await link.get_attribute("href") or ""
                         if raw_name and "/in/" in href:
                             name = raw_name
                             profile_url = href.split("?")[0]
                             break
+                
+                # 대체 수단: item 자체가 a 태그이거나 내부에 /in/ 링크가 있는 경우
+                if not profile_url:
+                    link = item.locator("a[href*='/in/']").first
+                    if await link.count():
+                        profile_url = (await link.get_attribute("href") or "").split("?")[0]
+                        name = (await link.text_content() or "").strip().split("\n")[0]
 
-                if not name or not profile_url:
+                if not profile_url:
                     continue
 
-                # "LinkedIn Member" / "LinkedIn 회원" 필터링
-                if "LinkedIn Member" in name or "LinkedIn 멤버" in name or "LinkedIn 회원" in name:
+                # "LinkedIn Member" 필터링
+                if any(x in name for x in ["LinkedIn Member", "LinkedIn 멤버", "LinkedIn 회원"]):
                     continue
 
                 # 직함+회사
@@ -411,8 +421,7 @@ class LinkedInBot:
                     el = item.locator(sel).first
                     if await el.count():
                         headline = (await el.text_content() or "").strip()
-                        if headline:
-                            break
+                        if headline: break
 
                 # 위치
                 location = ""
@@ -434,6 +443,7 @@ class LinkedInBot:
                     "location": location,
                     "url": profile_url,
                 })
+                print(f"    [+] 수집 성공: {name} ({profile_url})")
             except Exception as e:
                 print(f"  [!] 검색 결과 파싱 오류 (#{i}): {e}")
                 continue
@@ -445,6 +455,8 @@ class LinkedInBot:
         url = self._normalize_url(profile_url)
         await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
         await self.page.wait_for_timeout(2000)
+        
+        # 페이지 상단에서 헤드라인 정보는 미리 가져올 수 있음
         await self.page.evaluate("window.scrollBy(0, 500)")
         await self.page.wait_for_timeout(1000)
 
@@ -461,9 +473,90 @@ class LinkedInBot:
                     except Exception:
                         pass
                 about_text = (await section.text_content()).strip()
+                # 줄바꿈 및 다중 공백 정리
+                about_text = re.sub(r"\s+", " ", about_text)
                 break
 
         return about_text[:300] if about_text else ""
+
+    async def get_profile_headline(self) -> str:
+        """프로필 상단의 헤드라인(직함 정보)을 추출한다."""
+        selectors = [
+            "div.text-body-medium.break-words",
+            "div[data-generated-headline-anchor]",
+            "h2.text-body-medium",
+            ".pv-text-details__left-panel div"
+        ]
+        for sel in selectors:
+            el = self.page.locator(sel).first
+            if await el.count():
+                text = (await el.text_content() or "").strip()
+                if text:
+                    return re.sub(r"\s+", " ", text)
+        return ""
+
+    async def get_current_experience(self) -> tuple[str, str]:
+        """
+        현재 열려있는 프로필 페이지에서 최신 경력(직함, 회사)을 추출한다.
+        """
+        try:
+            # Experience 섹션이 보일 때까지 점진적으로 스크롤
+            for _ in range(3):
+                exp_section = self.page.locator("section#experience, section[data-member-id*='experience'], section:has(h2:text('Experience')), section:has(h2:text('경력'))").first
+                if await exp_section.count() and await exp_section.is_visible():
+                    break
+                await self.page.evaluate("window.scrollBy(0, 1000)")
+                await self.page.wait_for_timeout(1000)
+
+            exp_section = self.page.locator("section#experience, section[data-member-id*='experience'], section:has(h2:text('Experience')), section:has(h2:text('경력'))").first
+            if not await exp_section.count():
+                return "", ""
+
+            # 첫 번째 경력 항목(li) 찾기
+            first_item = exp_section.locator("li.pvs-list__item, li").first
+            if not await first_item.count():
+                return "", ""
+
+            # 직함 추출
+            title = ""
+            title_selectors = [
+                "div.display-flex.align-items-center.mr1.t-bold span[aria-hidden='true']",
+                "div.display-flex.align-items-center.mr1.t-bold",
+                ".t-bold span[aria-hidden='true']",
+                ".t-bold",
+                "span[data-view-name='experience-item-title']"
+            ]
+            for sel in title_selectors:
+                el = first_item.locator(sel).first
+                if await el.count():
+                    title = (await el.text_content() or "").strip()
+                    if title: break
+            
+            title = re.sub(r"\s+", " ", title)
+
+            # 회사명 추출
+            company = ""
+            company_selectors = [
+                "span.t-14.t-normal span[aria-hidden='true']",
+                "span.t-14.t-normal",
+                ".t-14.t-normal span[aria-hidden='true']",
+                "span[data-view-name='experience-item-subtitle']",
+            ]
+            for sel in company_selectors:
+                el = first_item.locator(sel).first
+                if await el.count():
+                    c_text = (await el.text_content() or "").strip()
+                    if c_text:
+                        # 회사명만 분리 (중점 기호 등 제거)
+                        company = c_text.split("·")[0].split("•")[0].strip()
+                        if company: break
+            
+            company = re.sub(r"\s+", " ", company)
+
+            return title, company
+        except Exception as e:
+            print(f"  [!] 경력 추출 중 오류: {e}")
+            return "", ""
 
     async def get_latest_post(self, profile_url: str) -> str:
         """프로필의 최근 포스트 텍스트를 추출한다."""
@@ -475,6 +568,7 @@ class LinkedInBot:
         post = self.page.locator("div.feed-shared-update-v2").first
         if await post.count():
             text = (await post.text_content()).strip()
+            text = re.sub(r"\s+", " ", text)
             return text[:200] if text else ""
         return ""
 
@@ -498,8 +592,8 @@ class LinkedInBot:
 
     async def random_delay(self):
         """메시지 간 랜덤 딜레이."""
-        min_d = getattr(self.config, "MIN_DELAY", 60)
-        max_d = getattr(self.config, "MAX_DELAY", 120)
+        min_d = getattr(self.config, "MIN_DELAY", 10)
+        max_d = getattr(self.config, "MAX_DELAY", 20)
         delay = random.uniform(min_d, max_d)
         print(f"  [*] {delay:.0f}초 대기 중...")
         await asyncio.sleep(delay)

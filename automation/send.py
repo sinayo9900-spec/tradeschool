@@ -27,16 +27,20 @@ from linkedin_bot import LinkedInBot
 
 def read_buyers() -> list[dict]:
     """buyers.csv를 읽어 dict 리스트로 반환한다."""
+    if not BUYERS_CSV.exists():
+        return []
     with open(BUYERS_CSV, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        return list(reader)
+        return [row for row in reader if row and any(row.values())]
 
 
 def read_outreach() -> list[dict]:
     """outreach.csv를 읽어 dict 리스트로 반환한다."""
+    if not OUTREACH_CSV.exists():
+        return []
     with open(OUTREACH_CSV, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        return list(reader)
+        return [row for row in reader if row and any(row.values())]
 
 
 def write_outreach(rows: list[dict]):
@@ -75,22 +79,24 @@ def get_send_targets(buyers: list[dict], outreach: list[dict], name_filter: str 
     # outreach에서 상태가 "대기"인 바이어 이름 집합
     waiting_names = set()
     for row in outreach:
-        if row.get("상태", "").strip() == "대기":
-            waiting_names.add(row["이름"].strip())
+        if (row.get("상태") or "").strip() == "대기":
+            name = (row.get("이름") or "").strip()
+            if name:
+                waiting_names.add(name)
 
     targets = []
     for buyer in buyers:
-        name = buyer.get("이름", "").strip()
-        url = buyer.get("LinkedIn URL", "").strip()
+        name = (buyer.get("이름") or "").strip()
+        url = (buyer.get("LinkedIn URL") or "").strip()
 
-        if not url:
+        if not url or not name:
             continue
 
         if name_filter and name != name_filter:
             continue
 
         # outreach에 없거나 "대기" 상태인 바이어만
-        in_outreach = any(r["이름"].strip() == name for r in outreach)
+        in_outreach = any((r.get("이름") or "").strip() == name for r in outreach)
         if in_outreach and name not in waiting_names:
             continue
 
@@ -116,7 +122,7 @@ def update_outreach_status(name: str, outreach: list[dict]) -> list[dict]:
     found = False
 
     for row in outreach:
-        if row["이름"].strip() == name:
+        if (row.get("이름") or "").strip() == name:
             row["상태"] = "발송"
             row["첫발송일"] = today
             found = True
@@ -127,7 +133,7 @@ def update_outreach_status(name: str, outreach: list[dict]) -> list[dict]:
         buyers = read_buyers()
         company = ""
         for b in buyers:
-            if b["이름"].strip() == name:
+            if (b.get("이름") or "").strip() == name:
                 company = b.get("회사", "")
                 break
         outreach.append({

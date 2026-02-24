@@ -50,7 +50,9 @@ def load_existing_urls() -> set[str]:
     with open(BUYERS_CSV, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            raw = row.get("LinkedIn URL", "").strip()
+            if not row:
+                continue
+            raw = (row.get("LinkedIn URL") or "").strip()
             if raw:
                 urls.add(normalize_url(raw))
     return urls
@@ -65,13 +67,14 @@ def append_to_buyers(prospects: list[dict]):
         if write_header:
             writer.writeheader()
         for p in prospects:
+            # 줄바꿈 제거 처리
             writer.writerow({
-                "이름": p["name"],
-                "직함": p.get("title", ""),
-                "회사": p.get("company", ""),
+                "이름": str(p["name"]).replace("\n", " ").strip(),
+                "직함": str(p.get("title", "")).replace("\n", " ").strip(),
+                "회사": str(p.get("company", "")).replace("\n", " ").strip(),
                 "산업": "F&B Distribution",
                 "LinkedIn URL": p.get("url", ""),
-                "메모": p.get("memo", ""),
+                "메모": str(p.get("memo", "")).replace("\n", " ").strip(),
             })
 
 
@@ -84,9 +87,10 @@ def append_to_outreach(prospects: list[dict]):
         if write_header:
             writer.writeheader()
         for p in prospects:
+            # 줄바꿈 제거 처리
             writer.writerow({
-                "이름": p["name"],
-                "회사": p.get("company", ""),
+                "이름": str(p["name"]).replace("\n", " ").strip(),
+                "회사": str(p.get("company", "")).replace("\n", " ").strip(),
                 "상태": "대기",
                 "첫발송일": "",
                 "후속발송일": "",
@@ -177,7 +181,24 @@ async def run_search(args):
         for i, p in enumerate(prospects):
             print(f"\n  [{i+1}/{len(prospects)}] {p['name']} — {p['url']}")
             try:
+                # 프로필 페이지 방문 및 소개/경력 추출
                 about = await bot.get_profile_about(p["url"])
+                
+                # 1. 상세 경력 추출 시도
+                exp_title, exp_company = await bot.get_current_experience()
+                
+                # 2. 실패 시 상단 헤드라인에서 추출 시도
+                if not exp_title:
+                    headline = await bot.get_profile_headline()
+                    if headline:
+                        exp_title, exp_company = bot._parse_headline(headline)
+
+                # 경력 정보가 추출되었다면 업데이트
+                if exp_title:
+                    p["title"] = exp_title
+                if exp_company:
+                    p["company"] = exp_company
+                
                 post = await bot.get_latest_post(p["url"])
 
                 memo_parts = []
@@ -189,6 +210,7 @@ async def run_search(args):
                     memo_parts.append(f"[위치] {p['location']}")
 
                 p["memo"] = " | ".join(memo_parts)
+                print(f"    직함/회사: {p['title']} @ {p['company']}")
                 print(f"    소개: {about[:80]}..." if about else "    소개: (없음)")
                 print(f"    포스트: {post[:80]}..." if post else "    포스트: (없음)")
             except Exception as e:
