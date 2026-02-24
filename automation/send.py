@@ -225,10 +225,8 @@ async def run_send(args):
                 results.append({"name": target["name"], "status": "skipped_pending"})
                 continue
             else:
-                print("  [!] 연결 상태를 확인할 수 없습니다. 건너뜁니다.")
-                results.append({"name": target["name"], "status": "skipped_unknown"})
-                fail_count += 1
-                continue
+                print("  [*] 연결 상태 불명 — 커넥션 요청을 시도합니다.")
+                sent = await bot.send_connection_request(target["url"], target["message"])
 
             if sent:
                 success_count += 1
