@@ -293,11 +293,17 @@ async def run_send(args):
                 sent = await bot.send_direct_message(target["url"], target["message"])
                 if sent: sent_dm += 1
             elif status == "not_connected":
-                if sent_conn >= limit_conn:
-                    print(f"  [*] 커넥션 요청 한도({limit_conn}) 도달로 건너뜜.")
-                    continue
-                sent = await bot.send_connection_request(target["url"], target["message"])
-                if sent: sent_conn += 1
+                # 메시지 보내기 버튼이 있으면 DM 우선
+                sent = await bot.send_direct_message(target["url"], target["message"])
+                if sent:
+                    sent_dm += 1
+                else:
+                    # DM 안 되면 커넥션 요청
+                    if sent_conn >= limit_conn:
+                        print(f"  [*] 커넥션 요청 한도({limit_conn}) 도달로 건너뜜.")
+                        continue
+                    sent = await bot.send_connection_request(target["url"], target["message"])
+                    if sent: sent_conn += 1
             elif status == "pending":
                 if target["is_followup"]:
                     print("  [*] 커넥션 보류 중이나 후속 메시지이므로 DM 전송 시도 불가 (취소)")

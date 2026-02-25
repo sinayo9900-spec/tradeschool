@@ -126,36 +126,61 @@ class LinkedInBot:
         try:
             section = self.page.locator(PROFILE_SECTION)
 
-            # 프로필 섹션 내 Connect / 1촌 맺기 버튼 찾기
-            connect_btn = None
-            for selector in [
+            # Connect 버튼 셀렉터 목록
+            connect_selectors = [
                 "button[aria-label*='Connect']",
                 "button[aria-label*='1촌 맺기']",
+                "button[aria-label*='Invite']",
                 f"{ACTION_AREA} button:has-text('Connect')",
                 f"{ACTION_AREA} button:has-text('1촌 맺기')",
-            ]:
+            ]
+
+            # 1단계: section 내에서 탐색
+            connect_btn = None
+            for selector in connect_selectors:
                 btn = section.locator(selector).first
                 if await btn.count() and await btn.is_visible():
                     connect_btn = btn
                     break
 
-            # 추가 메뉴(더보기) 안에 숨어있을 수 있음
+            # 2단계: 전체 페이지에서 탐색 (LinkedIn UI 변경으로 section 밖에 있을 수 있음)
             if not connect_btn:
-                more_btn = section.locator("button[aria-label='추가 메뉴'], button[aria-label*='More action']").first
-                if await more_btn.count() and await more_btn.is_visible():
-                    await more_btn.click()
-                    await self.page.wait_for_timeout(500)
-                    for sel in [
-                        "div[aria-label*='Connect']",
-                        "div[aria-label*='1촌 맺기']",
-                    ]:
-                        btn = self.page.locator(sel).first
-                        if await btn.count() and await btn.is_visible():
-                            connect_btn = btn
+                for selector in connect_selectors:
+                    btn = self.page.locator(selector).first
+                    if await btn.count() and await btn.is_visible():
+                        connect_btn = btn
+                        break
+
+            # 3단계: 추가 메뉴(더보기) 안에 숨어있을 수 있음
+            if not connect_btn:
+                for more_sel in [
+                    "button[aria-label='추가 메뉴']",
+                    "button[aria-label*='More actions']",
+                    "button[aria-label*='More action']",
+                    "button[aria-label*='More']",
+                ]:
+                    more_btn = self.page.locator(more_sel).first
+                    if await more_btn.count() and await more_btn.is_visible():
+                        await more_btn.click()
+                        await self.page.wait_for_timeout(500)
+                        for sel in [
+                            "div[aria-label*='Connect']",
+                            "div[aria-label*='1촌 맺기']",
+                            "span:has-text('Connect')",
+                            "li:has-text('Connect')",
+                            "li:has-text('1촌 맺기')",
+                        ]:
+                            btn = self.page.locator(sel).first
+                            if await btn.count() and await btn.is_visible():
+                                connect_btn = btn
+                                break
+                        if connect_btn:
                             break
 
             if not connect_btn:
-                print("  [!] Connect 버튼을 찾을 수 없습니다.")
+                debug_path = BROWSER_STATE_DIR / "debug_connect.png"
+                await self.page.screenshot(path=str(debug_path))
+                print(f"  [!] Connect 버튼을 찾을 수 없습니다. 스크린샷: {debug_path}")
                 return False
 
             await connect_btn.click()
