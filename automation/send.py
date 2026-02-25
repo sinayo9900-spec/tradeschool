@@ -113,6 +113,11 @@ def get_send_targets(buyers: list[dict], outreach: list[dict], name_filter: str 
                 except ValueError:
                     pass
 
+        # 오늘 이미 보낸 사람 제외 (중복 방지)
+        last_date_str = row.get("후속발송일") or row.get("첫발송일")
+        if last_date_str == today.strftime("%Y-%m-%d"):
+            is_target = False
+
         if not is_target:
             continue
 
@@ -136,6 +141,32 @@ def get_send_targets(buyers: list[dict], outreach: list[dict], name_filter: str 
         })
 
     return targets
+
+
+def get_today_sent_counts(outreach: list[dict]) -> tuple[int, int]:
+    """오늘 이미 보낸 다이렉트 메시지(DM)와 커넥션 요청 수를 계산한다."""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    dm_count = 0
+    conn_count = 0
+    
+    # 1촌 여부는 outreach.csv에 없으므로, '첫발송일'이 오늘이면서 
+    # 기존에 '발송' 상태가 아니었던 경우 등을 추정해야 하나 
+    # 정확한 구분은 발송 로그나 LinkedIn 상태 확인이 필요함.
+    # 여기서는 단순하게 오늘 날짜가 찍힌 행의 총 개수를 반환.
+    for row in outreach:
+        last_date = row.get("후속발송일") or row.get("첫발송일")
+        if last_date == today_str:
+            # 후속 메시지는 무조건 DM
+            if row.get("후속발송일") == today_str:
+                dm_count += 1
+            else:
+                # 첫 발송인데 오늘 날짜면, 실제 DM이었는지 커넥션이었는지는 
+                # 발송 시점에 판단되므로 여기서는 '미정'으로 처리하거나 
+                # 합산하여 전체 한도 체크에 사용.
+                # 편의상 conn_count로 우선 집계 (나중에 발송 시점에서 정교화)
+                conn_count += 1
+                
+    return dm_count, conn_count
 
 
 def update_outreach_status(name: str, outreach: list[dict], is_followup: bool = False) -> list[dict]:
@@ -193,28 +224,26 @@ async def run_send(args):
 
     targets = get_send_targets(buyers, outreach, name_filter=args.name)
 
+    # 오늘 보낸 양 확인
+    sent_dm, sent_conn = get_today_sent_counts(outreach)
+    
+    limit_dm = getattr(config, "DAILY_LIMIT", 1000)
+    limit_conn = getattr(config, "DAILY_CONNECTION_LIMIT", 25)
+
     if not targets:
         print("[!] 발송 대상이 없습니다.")
-        print("    - 상태가 '대기'이고 _first.md 메시지가 있는 바이어")
-        print("    - 마지막 발송(첫/후속) 후 7일이 지났고 _followup_N.md 메시지가 있는 바이어")
+        print(f"    (오늘 이미 보낸 양: DM {sent_dm}/{limit_dm}, 커넥션 {sent_conn}/{limit_conn})")
         return
-
-    # 일일 한도 적용
-    limit = args.limit or getattr(config, "DAILY_LIMIT", 20)
-    if len(targets) > limit:
-        print(f"[!] 대상 {len(targets)}명 중 일일 한도 {limit}명만 발송합니다.")
-        targets = targets[:limit]
 
     # 대상 목록 표시
     print("\n" + "=" * 50)
-    print(f"발송 대상 ({len(targets)}명):")
+    print(f"발송 대기 대상 ({len(targets)}명):")
+    print(f"오늘 현황: DM {sent_dm}/{limit_dm}, 커넥션 {sent_conn}/{limit_conn}")
     print("=" * 50)
     for i, t in enumerate(targets, 1):
         type_str = "후속 메시지" if t["is_followup"] else "첫 연락"
         msg_preview = t["message"][:60].replace("\n", " ") + "..."
         print(f"  {i}. {t['name']} ({t['company']}) [{type_str}]")
-        print(f"     URL: {t['url']}")
-        print(f"     메시지: {msg_preview}")
         print()
 
     if args.dry_run:
@@ -222,7 +251,7 @@ async def run_send(args):
         return
 
     # 사용자 확인
-    confirm = input("발송하시겠습니까? (y/n): ").strip().lower()
+    confirm = input("발송을 시작하시겠습니까? (y/n): ").strip().lower()
     if confirm != "y":
         print("[*] 발송을 취소했습니다.")
         return
@@ -244,35 +273,50 @@ async def run_send(args):
     results = []
 
     for i, target in enumerate(targets):
-        print(f"\n[{i+1}/{len(targets)}] {target['name']} ({target['company']})")
-        print(f"  유형: {'후속' if target['is_followup'] else '첫 연락'}")
+        # 실시간 한도 체크
+        if sent_dm >= limit_dm and sent_conn >= limit_conn:
+            print(f"\n[!] 일일 발송 한도에 모두 도달했습니다. (DM: {sent_dm}, 커넥션: {sent_conn})")
+            break
 
+        print(f"\n[{i+1}/{len(targets)}] {target['name']} ({target['company']})")
+        
         try:
             status = await bot.is_connected(target["url"])
             print(f"  연결 상태: {status}")
 
+            # 타입별 한도 체크 및 발송
             sent = False
             if status == "connected":
+                if sent_dm >= limit_dm:
+                    print(f"  [*] DM 한도({limit_dm}) 도달로 건너뜁니다.")
+                    continue
                 sent = await bot.send_direct_message(target["url"], target["message"])
+                if sent: sent_dm += 1
             elif status == "not_connected":
+                if sent_conn >= limit_conn:
+                    print(f"  [*] 커넥션 요청 한도({limit_conn}) 도달로 건너뜜.")
+                    continue
                 sent = await bot.send_connection_request(target["url"], target["message"])
+                if sent: sent_conn += 1
             elif status == "pending":
                 if target["is_followup"]:
                     print("  [*] 커넥션 보류 중이나 후속 메시지이므로 DM 전송 시도 불가 (취소)")
-                    sent = False
                 else:
                     print("  [*] 이미 커넥션 요청이 보류 중입니다. 건너뜁니다.")
-                    results.append({"name": target["name"], "status": "skipped_pending"})
-                    continue
+                results.append({"name": target["name"], "status": "skipped_pending"})
+                continue
             else:
+                if sent_conn >= limit_conn:
+                    print(f"  [*] 커넥션 요청 한도({limit_conn}) 도달로 건너뜜.")
+                    continue
                 sent = await bot.send_connection_request(target["url"], target["message"])
+                if sent: sent_conn += 1
 
             if sent:
                 success_count += 1
                 outreach = update_outreach_status(target["name"], outreach, is_followup=target["is_followup"])
                 write_outreach(outreach)
                 results.append({"name": target["name"], "status": "sent"})
-                print(f"  [+] outreach.csv 업데이트 완료 ({'후속발송일' if target['is_followup'] else '첫발송일'})")
             else:
                 fail_count += 1
                 results.append({"name": target["name"], "status": "failed"})

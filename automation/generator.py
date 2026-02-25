@@ -22,6 +22,8 @@ CURRENT_LLM_TYPE = os.getenv("LLM_CLI_TYPE", "gemini").lower()
 if CURRENT_LLM_TYPE not in AVAILABLE_LLMS:
     CURRENT_LLM_TYPE = "gemini"
 
+SENDER_NAME = os.getenv("SENDER_NAME", "Jiwoo Shin")
+
 def read_csv(path):
     if not path.exists(): return []
     with open(path, "r", encoding="utf-8") as f:
@@ -140,8 +142,16 @@ def generate_messages():
 다음 정보를 바탕으로 LinkedIn 아웃리치 메시지를 생성해서 {t['path'].name} 파일에 저장할 내용만 출력해줘.
 형식은 상단에 YAML 메타데이터(바이어, 회사, 유형, 생성일)를 포함한 마크다운 형식이어야 해.
 
+[전략 가이드라인]
+1. 게시물 참여도 및 관심사 반영: 바이어의 최근 포스트나 관심사(식품 트렌드, ESG, 전시회 등)를 언급하며 친밀감을 형성할 것.
+2. 비즈니스 가치 제안: 제품이 바이어의 현재 라인업을 어떻게 보완하거나 경쟁력을 높일 수 있는지 강조할 것.
+3. 전문성 강조: 싱가포르 바이어가 신뢰할 수 있는 전문 용어(예: ISO 인증, 수출 전문, 프리미엄 품질)를 활용할 것.
+
 [제품 정보]
 {product_content}
+
+[발신자 정보]
+이름: {SENDER_NAME}
 
 [바이어 정보]
 이름: {t['name']}
@@ -149,11 +159,14 @@ def generate_messages():
 회사: {t['info'].get('회사')}
 메모: {t['info'].get('메모')}
 
-[가이드라인]
+[메시지 템플릿/가이드]
 {template}
 
 유형: {t['type']}
 오늘 날짜: {datetime.now().strftime('%Y-%m-%d')}
+
+[주의사항]
+- 메시지 하단 서명에 [Your Name] 대신 반드시 발신자 이름({SENDER_NAME})을 사용해줘.
 """
         
         content = call_llm_cli(prompt)

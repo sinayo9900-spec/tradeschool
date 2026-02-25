@@ -22,10 +22,10 @@ except ImportError:
 from linkedin_bot import LinkedInBot
 
 DEFAULT_QUERIES = [
-    "Singapore F&B procurement manager",
-    "Singapore snack biscuit distribution",
-    "Singapore food import buyer",
-    "Singapore FMCG procurement",
+    '("Category Manager" OR "Procurement") AND ("Snacks" OR "Biscuits" OR "F&B") AND "Singapore"',
+    '("Senior Merchandiser" OR "F&B Buyer") AND "Singapore"',
+    '("Facilities Manager" OR "Office Experience Manager") AND "Singapore"',
+    '("Supply Chain Planner" OR "Sourcing Executive") AND "Singapore"',
 ]
 
 MAX_PAGES_PER_QUERY = 10
