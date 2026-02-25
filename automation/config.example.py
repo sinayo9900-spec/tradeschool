@@ -13,3 +13,6 @@ MIN_DELAY = int(os.getenv("MIN_DELAY", "60"))
 MAX_DELAY = int(os.getenv("MAX_DELAY", "120"))
 MIN_TYPE_DELAY = int(os.getenv("MIN_TYPE_DELAY", "50"))
 MAX_TYPE_DELAY = int(os.getenv("MAX_TYPE_DELAY", "150"))
+
+# LLM CLI 설정 (gemini, claude, codex 중 선택)
+LLM_CLI_TYPE = os.getenv("LLM_CLI_TYPE", "gemini")

@@ -179,86 +179,91 @@ async def run_search(args):
         print("=" * 50)
 
         for i, p in enumerate(prospects):
-            print(f"\n  [{i+1}/{len(prospects)}] {p['name']} — {p['url']}")
-            try:
-                # 프로필 페이지 방문 및 소개/경력 추출
-                about = await bot.get_profile_about(p["url"])
-                
-                # 1. 상세 경력 추출 시도
-                exp_title, exp_company = await bot.get_current_experience()
-                
-                # 2. 실패 시 상단 헤드라인에서 추출 시도
-                if not exp_title:
-                    headline = await bot.get_profile_headline()
-                    if headline:
-                        exp_title, exp_company = bot._parse_headline(headline)
+                print(f"\n  [{i+1}/{len(prospects)}] {p['name']} — {p['url']}")
+                try:
+                    # 프로필 페이지 방문 및 소개/경력 추출
+                    about = await bot.get_profile_about(p["url"])
+                    
+                    # 1. 상세 경력 추출 시도
+                    exp_title, exp_company = await bot.get_current_experience()
+                    
+                    # 2. 실패 시 상단 헤드라인에서 추출 시도
+                    if not exp_title:
+                        headline = await bot.get_profile_headline()
+                        if headline:
+                            exp_title, exp_company = bot._parse_headline(headline)
 
-                # 경력 정보가 추출되었다면 업데이트
-                if exp_title:
-                    p["title"] = exp_title
-                if exp_company:
-                    p["company"] = exp_company
-                
-                post = await bot.get_latest_post(p["url"])
+                    # 경력 정보가 추출되었다면 업데이트
+                    if exp_title:
+                        p["title"] = exp_title
+                    if exp_company:
+                        p["company"] = exp_company
+                    
+                    post = await bot.get_latest_post(p["url"])
 
-                memo_parts = []
-                if about:
-                    memo_parts.append(f"[소개] {about}")
-                if post:
-                    memo_parts.append(f"[최근포스트] {post}")
-                if p.get("location"):
-                    memo_parts.append(f"[위치] {p['location']}")
+                    memo_parts = []
+                    if about:
+                        memo_parts.append(f"[소개] {about}")
+                    if post:
+                        memo_parts.append(f"[최근포스트] {post}")
+                    if p.get("location"):
+                        memo_parts.append(f"[위치] {p['location']}")
 
-                p["memo"] = " | ".join(memo_parts)
-                print(f"    직함/회사: {p['title']} @ {p['company']}")
-                print(f"    소개: {about[:80]}..." if about else "    소개: (없음)")
-                print(f"    포스트: {post[:80]}..." if post else "    포스트: (없음)")
-            except Exception as e:
-                print(f"    [!] 프로필 수집 실패: {e}")
-                if p.get("location"):
-                    p["memo"] = f"[위치] {p['location']}"
+                    p["memo"] = " | ".join(memo_parts)
+                    print(f"    직함/회사: {p['title']} @ {p['company']}")
+                    
+                    # 실시간 저장: 한 명의 정보를 완성할 때마다 CSV에 추가
+                    if not dry_run:
+                        append_to_buyers([p])
+                        append_to_outreach([p])
+                        print(f"    [+] 실시간 저장 완료")
 
-            # 프로필 간 딜레이
-            if i < len(prospects) - 1:
-                await bot.random_delay()
+                except Exception as e:
+                    print(f"    [!] 프로필 수집 실패: {e}")
+                    if p.get("location"):
+                        p["memo"] = f"[위치] {p['location']}"
+                    # 실패하더라도 기본 정보는 저장
+                    if not dry_run:
+                        append_to_buyers([p])
+                        append_to_outreach([p])
 
-        print(f"\n[*] Phase 2 완료")
+                # 프로필 간 딜레이
+                if i < len(prospects) - 1:
+                    await bot.random_delay()
+
     else:
-        # skip-profiles: 위치 정보만 메모에 저장
+        # skip-profiles: 위치 정보만 메모에 저장하고 일괄 저장
         for p in prospects:
             if p.get("location"):
                 p["memo"] = f"[위치] {p['location']}"
+        
+        if not dry_run:
+            append_to_buyers(prospects)
+            append_to_outreach(prospects)
+            print(f"\n[+] {len(prospects)}건 일괄 저장 완료")
 
     await bot.close()
+    print(f"\n[*] Phase 2 완료")
 
-    # Phase 3: 결과 표시 + 저장
+    # Phase 3: 결과 표시
     print("\n" + "=" * 50)
-    print(f"수집 결과 ({len(prospects)}건)")
+    print(f"수집 프로세스 종료 (총 {len(prospects)}건 처리)")
     print("=" * 50)
 
     if not prospects:
         print("[!] 수집된 바이어가 없습니다.")
         return
 
-    # 테이블 출력
+    # 테이블 출력 (이미 저장되었으므로 목록만 표시)
     print(f"{'#':<4} {'이름':<20} {'직함':<25} {'회사':<20} {'위치':<15}")
     print("-" * 84)
     for i, p in enumerate(prospects, 1):
-        name = p["name"][:18]
-        title = p.get("title", "")[:23]
-        company = p.get("company", "")[:18]
-        location = p.get("location", "")[:13]
+        name = str(p["name"])[:18]
+        title = str(p.get("title", ""))[:23]
+        company = str(p.get("company", ""))[:18]
+        location = str(p.get("location", ""))[:13]
         print(f"{i:<4} {name:<20} {title:<25} {company:<20} {location:<15}")
 
-    if dry_run:
-        print(f"\n[DRY RUN] 미리보기 모드 — CSV에 저장하지 않습니다.")
-        return
-
-    # CSV 저장
-    append_to_buyers(prospects)
-    append_to_outreach(prospects)
-    print(f"\n[+] buyers.csv에 {len(prospects)}건 추가")
-    print(f"[+] outreach.csv에 {len(prospects)}건 추가 (상태: 대기)")
 
 
 def main():

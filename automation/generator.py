@@ -1,16 +1,26 @@
 import csv
 import subprocess
 import sys
+import os
 import re
 from pathlib import Path
 from datetime import datetime
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / "automation" / ".env")
+
 BUYERS_CSV = BASE_DIR / "data" / "buyers.csv"
 OUTREACH_CSV = BASE_DIR / "data" / "outreach.csv"
 PRODUCT_MD = BASE_DIR / "data" / "product.md"
 MESSAGES_DIR = BASE_DIR / "output" / "messages"
 TEMPLATES_DIR = BASE_DIR / "templates"
+
+# LLM CLI 설정 및 상태 관리
+AVAILABLE_LLMS = ["gemini", "claude", "codex"]
+CURRENT_LLM_TYPE = os.getenv("LLM_CLI_TYPE", "gemini").lower()
+if CURRENT_LLM_TYPE not in AVAILABLE_LLMS:
+    CURRENT_LLM_TYPE = "gemini"
 
 def read_csv(path):
     if not path.exists(): return []
@@ -59,29 +69,55 @@ def get_generation_targets():
     return targets
 
 def call_llm_cli(prompt):
-    """Gemini CLI를 호출하여 결과를 반환합니다. 표준 입력을 사용하여 안정적으로 프롬프트를 전달합니다."""
-    try:
-        # 표준 입력을 통해 프롬프트를 전달
-        result = subprocess.run(
-            ["gemini", "-o", "text"], 
-            input=prompt,
-            capture_output=True, 
-            text=True, 
-            encoding="utf-8",
-            shell=True
-        )
-        if result.returncode != 0:
-            print(f"    [!] CLI 오류 (코드 {result.returncode}): {result.stderr.strip()}")
-            return None
+    """설정된 LLM CLI(gemini, claude, codex)를 호출하여 결과를 반환합니다. 
+    호출 실패 시 다른 사용 가능한 CLI로 재시도합니다.
+    """
+    global CURRENT_LLM_TYPE
+    
+    # 현재 선호하는 CLI부터 시작하여 모든 가용 CLI를 시도
+    # 예: [gemini, claude, codex] 순서에서 현재가 claude라면 [claude, codex, gemini] 순으로 시도
+    start_idx = AVAILABLE_LLMS.index(CURRENT_LLM_TYPE)
+    llms_to_try = AVAILABLE_LLMS[start_idx:] + AVAILABLE_LLMS[:start_idx]
+
+    for llm_type in llms_to_try:
+        # CLI 명령어 구성
+        if llm_type == "claude":
+            cmd = ["claude", "-o", "text"]
+        elif llm_type == "codex":
+            cmd = ["codex", "-o", "text"]
+        else:
+            cmd = ["gemini", "-o", "text"]
+
+        try:
+            # 표준 입력을 통해 프롬프트를 전달
+            result = subprocess.run(
+                cmd, 
+                input=prompt,
+                capture_output=True, 
+                text=True, 
+                encoding="utf-8",
+                shell=True
+            )
+            
+            if result.returncode == 0:
+                # 성공 시 현재 전역 LLM 타입을 업데이트하여 다음 호출에서도 이 CLI를 먼저 사용하게 함
+                CURRENT_LLM_TYPE = llm_type
+                
+                # 출력 결과 정제
+                output = result.stdout.strip()
+                # 불필요한 ANSI 제어 문자 제거 (있는 경우)
+                output = re.sub(r'\x1B[@-_][0-?]*[ -/]*[@-~]', '', output)
+                return output
+            else:
+                print(f"    [!] {llm_type} CLI 오류 (코드 {result.returncode}): {result.stderr.strip()[:100]}...")
+                print(f"    [*] 다른 CLI로 재시도를 시도합니다.")
         
-        # 출력 결과 정제
-        output = result.stdout.strip()
-        # 불필요한 ANSI 제어 문자 제거 (있는 경우)
-        output = re.sub(r'\x1B[@-_][0-?]*[ -/]*[@-~]', '', output)
-        return output
-    except Exception as e:
-        print(f"  [!] CLI 호출 실패: {e}")
-        return None
+        except Exception as e:
+            print(f"  [!] {llm_type} CLI 호출 실패: {e}")
+            print(f"  [*] 다른 CLI로 재시도를 시도합니다.")
+            
+    print("  [!!] 모든 사용 가능한 LLM CLI 호출에 실패했습니다.")
+    return None
 
 def generate_messages():
     targets = get_generation_targets()

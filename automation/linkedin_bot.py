@@ -477,7 +477,23 @@ class LinkedInBot:
                 about_text = re.sub(r"\s+", " ", about_text)
                 break
 
-        return about_text[:300] if about_text else ""
+        if not about_text:
+            return ""
+
+        # Gemini CLI로 1000자 내외 요약
+        try:
+            from generator import call_llm_cli
+            prompt = (
+                "다음 LinkedIn 소개 텍스트를 1000자 이내로 핵심만 요약해줘. "
+                "설명 없이 요약 결과만 출력해:\n\n" + about_text
+            )
+            summarized = call_llm_cli(prompt)
+            if summarized:
+                return summarized.strip()
+        except Exception:
+            pass
+
+        return about_text[:1000]
 
     async def get_profile_headline(self) -> str:
         """프로필 상단의 헤드라인(직함 정보)을 추출한다."""
@@ -565,11 +581,20 @@ class LinkedInBot:
         await self.page.goto(activity_url, wait_until="domcontentloaded", timeout=15000)
         await self.page.wait_for_timeout(3000)
 
-        post = self.page.locator("div.feed-shared-update-v2").first
-        if await post.count():
-            text = (await post.text_content()).strip()
-            text = re.sub(r"\s+", " ", text)
-            return text[:200] if text else ""
+        # scaffold-finite-scroll 내 첫 번째 li에서 포스트 본문 추출
+        first_li = self.page.locator("div.scaffold-finite-scroll__content ul li").first
+        if not await first_li.count():
+            return ""
+
+        # update-components-text > span.break-words 가 포스트 본문 컨테이너
+        text_el = first_li.locator("div.update-components-text span.break-words").first
+        if await text_el.count():
+            # inner_text()는 aria-hidden/visually-hidden 등 숨겨진 요소 제외
+            text = (await text_el.inner_text()).strip()
+            if text:
+                text = re.sub(r"\s+", " ", text)
+                return text[:500]
+
         return ""
 
     @staticmethod
