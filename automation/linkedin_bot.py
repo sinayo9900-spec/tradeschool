@@ -31,12 +31,25 @@ class LinkedInBot:
         BROWSER_STATE_DIR.mkdir(parents=True, exist_ok=True)
         profile_dir = str(BROWSER_STATE_DIR / "profile")
 
-        self.context = await self.playwright.chromium.launch_persistent_context(
+        browser_type = getattr(self.config, "BROWSER_TYPE", "chromium").lower()
+        channel = None
+        if browser_type == "chrome":
+            browser_type = "chromium"
+            channel = "chrome"
+        elif browser_type == "firefox":
+            browser_type = "firefox"
+
+        launcher = getattr(self.playwright, browser_type)
+        launch_kwargs = dict(
             user_data_dir=profile_dir,
             headless=headless,
             viewport={"width": 1280, "height": 800},
             locale="en-US",
         )
+        if channel:
+            launch_kwargs["channel"] = channel
+
+        self.context = await launcher.launch_persistent_context(**launch_kwargs)
         print("[*] 브라우저 세션을 로드했습니다.")
 
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
@@ -235,11 +248,34 @@ class LinkedInBot:
             print(f"  [!] 커넥션 요청 실패: {e}")
             return False
 
+    async def _close_message_overlays(self):
+        """열려 있는 LinkedIn 채팅 오버레이를 모두 닫는다."""
+        for close_sel in [
+            "button.msg-overlay-bubble-header__control[aria-label*='닫']",
+            "button.msg-overlay-bubble-header__control[aria-label*='Close']",
+            "button[data-control-name='overlay.close_conversation_window']",
+            "button.msg-overlay-conversation-bubble__close-btn",
+        ]:
+            try:
+                btns = self.page.locator(close_sel)
+                count = await btns.count()
+                for i in range(count):
+                    btn = btns.nth(i)
+                    if await btn.is_visible():
+                        await btn.click()
+                        await self.page.wait_for_timeout(300)
+            except Exception:
+                pass
+
     async def send_direct_message(self, profile_url: str, message: str) -> bool:
         """이미 연결된 사용자에게 다이렉트 메시지를 보낸다."""
         url = self._normalize_url(profile_url)
         await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
-        await self.page.wait_for_timeout(2000)
+        await self.page.wait_for_timeout(1500)
+
+        # 열린 채팅 오버레이가 버튼을 가릴 수 있으므로 먼저 닫기
+        await self._close_message_overlays()
+        await self.page.wait_for_timeout(500)
 
         try:
             # 프로필 섹션 내 메시지 보내기 버튼 클릭
