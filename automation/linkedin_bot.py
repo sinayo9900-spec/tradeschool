@@ -33,11 +33,15 @@ class LinkedInBot:
 
         browser_type = getattr(self.config, "BROWSER_TYPE", "chromium").lower()
         channel = None
-        if browser_type == "chrome":
+        if browser_type == "safari":
+            browser_type = "webkit"
+        elif browser_type == "chrome":
             browser_type = "chromium"
             channel = "chrome"
-        elif browser_type == "firefox":
-            browser_type = "firefox"
+
+        if browser_type not in ("chromium", "firefox", "webkit"):
+            print(f"  [!] 알 수 없는 BROWSER_TYPE '{browser_type}', chromium으로 대체합니다.")
+            browser_type = "chromium"
 
         launcher = getattr(self.playwright, browser_type)
         launch_kwargs = dict(
